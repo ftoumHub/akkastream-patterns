@@ -3,6 +3,7 @@ package demo;
 import akka.NotUsed;
 import akka.actor.ActorSystem;
 import akka.japi.JavaPartialFunction;
+import akka.japi.pf.PFBuilder;
 import akka.stream.ActorMaterializer;
 import akka.stream.FlowShape;
 import akka.stream.UniformFanInShape;
@@ -25,6 +26,7 @@ import play.libs.ws.WSResponse;
 import play.libs.ws.ahc.AhcWSClient;
 import play.libs.ws.ahc.StandaloneAhcWSClient;
 
+import java.io.IOException;
 import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -46,6 +48,14 @@ public class Vikings {
     private static final AhcWSClient wsClient = new AhcWSClient(
             StandaloneAhcWSClient.create(forConfig(load(), system.getClass().getClassLoader()), materializer), materializer);
 
+    /**
+     * Vérifier l'insertion des données avec un GET sur les 2 urls:
+     * - http://localhost:9200/_search
+     * - http://localhost:9201/_search
+     *
+     * @param args
+     * @throws URISyntaxException
+     */
     public static void main(String[] args) throws URISyntaxException {
 
         Path csvPath = Paths.get(getSystemResource("vikings.csv").toURI());
@@ -59,13 +69,6 @@ public class Vikings {
             return objectNode;
         };
 
-        final JavaPartialFunction<List<String>, ObjectNode> listObjectNodePartialFunction = new JavaPartialFunction<>() {
-            @Override
-            public ObjectNode apply(List<String> x, boolean isCheck) {
-                return serializeNamePlace.apply(x);
-            }
-        };
-
         final List<String> servers = List.of("localhost:9200", "localhost:9201");
         println(index());
 
@@ -74,23 +77,23 @@ public class Vikings {
 
         FileIO.fromPath(csvPath)
                 .via(Framing.delimiter(ByteString.fromString("\n"), 1000, ALLOW))
-                .map(__ -> __.utf8String())
+                .map(bytes -> bytes.utf8String())
                 .drop(1)
-                .map(__ -> List.of(__.split(";")))
-                .collect(listObjectNodePartialFunction)
+                .map(line -> List.of(line.split(";")))
+                .collect(new PFBuilder<List<String>, ObjectNode>().match(List.class, l -> serializeNamePlace.apply(l)).build())
                 .grouped(5) // Attention ici c'est une java.util.List qui est retournée
                 .map(List::ofAll)
                 .via(loadBalancing(servers, server -> {
                     logger.debug(server + " for flow");
-                    final Flow<List<ObjectNode>, WSResponse, NotUsed> listWSResponseNotUsedFlow = Flow.<List<ObjectNode>>create().mapAsync(1, bulk -> {
-                        final String strBulk = getBulk.apply(bulk);
-                        logger.debug(server + " -> " + strBulk);
-                        return wsClient.url(String.format("http://%s/_bulk", server))
-                                .addHeader("Content-Type", "application/x-ndjson")
-                                .post(strBulk);
+                    return  Flow.<List<ObjectNode>>create().mapAsync(1, bulk -> {
+                                final String strBulk = getBulk.apply(bulk);
+                                logger.debug(server + " -> " + strBulk);
+                                return wsClient.url(String.format("http://%s/_bulk", server))
+                                        .addHeader("Content-Type", "application/x-ndjson")
+                                        .post(strBulk);
                     });
-                    return listWSResponseNotUsedFlow;
                 }))
+                .map(resp -> resp.asJson())
                 .runForeach(API::println, materializer)
                 .thenAccept(d -> {
                     logger.info("Lecture terminée");
