@@ -1,0 +1,20 @@
+######################
+# Intellij
+######################
+.idea/
+*.iml
+*.iws
+*.ipr
+*.ids
+*.orig
+
+######################
+# Maven
+######################
+log/
+target/
+
+######################
+# Mappings Wiremock
+######################
+#src/test/resources/mappings/
